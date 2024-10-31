@@ -34,6 +34,8 @@ NSWITCH_ENVVARS = ['DEVKITPRO']
 
 PSVITA_ENVVARS = ['VITASDK']
 
+WASM_ENVVARS = ['EMSDK']
+
 # This class does support ONLY r10e and r19c/r20 NDK
 class Android:
 	ctx            = None # waf context
@@ -434,6 +436,70 @@ class NintendoSwitch:
 		ldflags = [] # ['-lm', '-lstdc++']
 		return ldflags
 
+class WASM:
+	ctx          = None # waf context
+	arch         = "WASM32"
+	emsdk_dir      = None
+	
+
+	def __init__(self, ctx, html, preload):
+		self.ctx = ctx
+		self.html = html
+		self.preload = preload
+
+		for i in WASM_ENVVARS:
+			self.emsdk_dir = os.getenv(i)
+			if self.emsdk_dir != None:
+				break
+		else:
+			ctx.fatal('Please Install EMSDK to build for Webassembly!')
+
+		self.emsdk_dir = os.path.abspath(self.emsdk_dir)
+
+
+	def gen_toolchain_prefix(self):
+		return ''
+
+	def gen_gcc_toolchain_path(self):
+		return os.path.join(self.emsdk_dir,'upstream/emscripten/')
+
+	def cc(self):
+		return self.gen_gcc_toolchain_path() + 'emcc'
+
+	def cxx(self):
+		return self.gen_gcc_toolchain_path() + 'em++'
+
+	def cflags(self, cxx = False):
+		cflags = []
+		# Library flags
+		cflags += ['-D__EMSCRIPTEN__', '-sUSE_SDL=2', '-sUSE_FREETYPE=1','-sUSE_BZIP2=1']
+		return cflags
+
+	# they go before object list
+	def linkflags(self):
+		# Library flags again
+		linkflags = ['-lidbfs.js','-sUSE_SDL=2', '-sUSE_FREETYPE=1','-sUSE_BZIP2=1']
+		if self.html:
+			linkflags += ['-sSINGLE_FILE', '--shell-file='+top+'/WASM/shell.htm', '--pre-js='+top+'/WASM/pre.js']
+		if self.preload != '':
+			if self.html:
+				linkflags += ['--embed-file='+preload+'@/preload']
+			else:
+				linkflags += ['--preload-file='+preload+'@/preload']
+		return linkflags
+
+	def ldflags(self):
+		# NOTE: shared libraries should be built without standard libs, so that they could import their contents from the NRO,
+		# but executables, including the SDL2 sanity check, will generally require libstdc++ and libm, which we will add manually
+		ldflags = [] # ['-lm', '-lstdc++']
+		return ldflags
+	
+	def binfmt(self):
+		binfmt = 'js'
+		if self.html:
+			binfmt = 'html'
+		return binfmt
+
 class PSVita:
 	ctx          = None # waf context
 	arch         ='armeabi-v7a-hard'
@@ -510,11 +576,41 @@ def options(opt):
 		help='enable building for Nintendo Switch [default: %(default)s]')
 	xc.add_option('--psvita', action='store_true', dest='PSVITA', default = False,
 		help='enable building for PlayStation Vita [default: %(default)s]')
+	xc.add_option('--WASM', action='store_true', dest='WASMOPTS', default = False,
+		help='enable building for Webassembly, format: --WASM=<isStandaloneHTML?>,<files to preload if you want>')
 	xc.add_option('--sailfish', action='store', dest='SAILFISH', default = None,
 		help='enable building for Sailfish/Aurora')
-
 def configure(conf):
-	if conf.options.ANDROID_OPTS:
+	if conf.options.WASMOPTS:
+		if type(conf.options.WASMOPTS) == str:
+			vals = conf.options.WASM.split(',')
+			if len(vals) == 0:
+				conf.wasm = wasm = WASM(conf,False,'')
+			elif len(vals) == 1:
+				try:
+					conf.wasm = wasm = WASM(conf,bool(vals[0]))
+				except:
+					conf.fatal('Invalid --WASM parameter. isStandaloneHTML must be True or False')
+			elif len(vals) == 2:
+				try:
+					conf.wasm = wasm = WASM(conf,bool(vals[0]),vals[1])
+				except:
+					conf.fatal('Invalid --WASM parameter.')
+			else:
+				conf.fatal('Invalid --WASM parameter.')
+		else:
+			conf.wasm = wasm = WASM(conf,False,'')
+		conf.environ['CC'] = wasm.cc()
+		conf.environ['CXX'] = wasm.cxx()
+		conf.env.CFLAGS += wasm.cflags()
+		conf.env.CXXFLAGS += wasm.cflags(True)
+		conf.env.LINKFLAGS += wasm.linkflags()
+		conf.env.LDFLAGS += wasm.ldflags()
+		conf.env.HAVE_M = True
+		conf.env.DEST_OS = 'emscripten'
+		conf.env.DEST_BINFMT = wasm.binfmt()
+
+	elif conf.options.ANDROID_OPTS:
 		values = conf.options.ANDROID_OPTS.split(',')
 		if len(values) != 3:
 			conf.fatal('Invalid --android paramater value!')
@@ -596,7 +692,7 @@ def configure(conf):
 	conf.env.MAGX = conf.options.MAGX
 	conf.env.MSVC_WINE = conf.options.MSVC_WINE
 	conf.env.SAILFISH = conf.options.SAILFISH
-	MACRO_TO_DESTOS = OrderedDict({ '__ANDROID__' : 'android', '__SWITCH__' : 'nswitch', '__vita__' : 'psvita', '__wasi__': 'wasi' })
+	MACRO_TO_DESTOS = OrderedDict({ '__ANDROID__' : 'android', '__SWITCH__' : 'nswitch', '__vita__' : 'psvita', '__wasi__': 'wasi','__EMSCRIPTEN__':'emscripten' })
 	for k in c_config.MACRO_TO_DESTOS:
 		MACRO_TO_DESTOS[k] = c_config.MACRO_TO_DESTOS[k] # ordering is important
 	c_config.MACRO_TO_DESTOS  = MACRO_TO_DESTOS
